@@ -1,0 +1,230 @@
+local userMetatable = {}
+
+---@class User
+---@field id string
+---@field name string
+---@field status "online" | "offline" | "away"
+---@field lastActive number
+---@field chatrooms ID[]
+---@field friends ID[]
+---@field blockedUsers ID[]
+---@field privileges number -- Server side only
+---@field profilePicture love.ImageData | nil
+---@field customStatus string | nil
+---@field customStatusExpires number | nil -- Timestamp when the custom status expires
+local userFunctions = {}
+userMetatable.__index = userFunctions
+
+---@param id ID?
+---@param name string
+---@param password string
+---@return User
+local function newUser(id, name, password)
+    local user = {}
+    user.id = id or ID.newID()
+    user.name = name or "Unnamed User"
+    user.password = password
+    user.status = "offline"
+    user.lastActive = os.time()
+    user.chatrooms = {}
+    user.friends = {}
+    user.blockedUsers = {}
+    user.privileges = 1 -- Server side only
+    user.profilePicture = nil
+    user.customStatus = nil
+    user.customStatusExpires = nil
+
+    setmetatable(user, userMetatable)
+
+    return user
+end
+
+--- Loads a user from a table.
+---@param user table
+---@return boolean
+---@return string | User
+local function loadUser(user)
+    if not user.id or not user.name or not user.password then
+        return false, "Invalid user data"
+    end
+
+    -- Ensure the user has a valid status
+    if not (user.status == "online" or user.status == "offline" or user.status == "away") then
+        user.status = "offline"
+    end
+
+    setmetatable(user, userMetatable)
+
+    return true, user
+end
+
+--- Updates the user's status.
+--- @param status "online" | "offline" | "away"
+--- @return boolean
+function userFunctions:updateStatus(status)
+    if status ~= "online" and status ~= "offline" and status ~= "away" then
+        return false
+    end
+    self.status = status
+    self.lastActive = os.time()
+
+    return true
+end
+
+--- Adds a chatroom to the user's list of chatrooms.
+--- @param chatroom Chatroom
+function userFunctions:addChatroom(chatroom)
+    for _, existingChatroom in ipairs(self.chatrooms) do
+        if existingChatroom == chatroom.id then
+            return false -- Chatroom already exists
+        end
+    end
+
+    table.insert(self.chatrooms, chatroom.id)
+    return true
+end
+
+--- Adds a friend to the user's list of friends.
+--- @param friend User
+--- @return boolean
+function userFunctions:addFriend(friend)
+    for _, existingFriend in ipairs(self.friends) do
+        if existingFriend == friend.id then
+            return false -- Friend already exists
+        end
+    end
+
+    table.insert(self.friends, friend.id)
+    return true
+end
+
+--- Removes a friend from the user's list of friends.
+--- @param friend User
+--- @return boolean
+function userFunctions:removeFriend(friend)
+    for i, existingFriend in ipairs(self.friends) do
+        if existingFriend == friend.id then
+            table.remove(self.friends, i)
+            return true -- Friend removed successfully
+        end
+    end
+
+    return false -- Friend not found
+end
+
+--- Blocks a user.
+--- @param user User
+--- @return boolean
+function userFunctions:blockUser(user)
+    for _, blockedUser in ipairs(self.blockedUsers) do
+        if blockedUser == user.id then
+            return false -- User already blocked
+        end
+    end
+
+    table.insert(self.blockedUsers, user.id)
+    return true
+end
+
+--- Unblocks a user.
+--- @param user User
+--- @return boolean
+function userFunctions:unblockUser(user)
+    for i, blockedUser in ipairs(self.blockedUsers) do
+        if blockedUser == user.id then
+            table.remove(self.blockedUsers, i)
+            return true -- User unblocked successfully
+        end
+    end
+
+    return false -- User not found in blocked list
+end
+
+--- Gets if a user is blocked.
+--- @param user User
+--- @return boolean
+function userFunctions:isBlocked(user)
+    for _, blockedUser in ipairs(self.blockedUsers) do
+        if blockedUser == user.id then
+            return true -- User is blocked
+        end
+    end
+
+    return false -- User is not blocked
+end
+
+--- Gets if a user is a friend.
+--- @param user User
+--- @return boolean
+function userFunctions:isFriend(user)
+    for _, friend in ipairs(self.friends) do
+        if friend == user.id then
+            return true -- User is a friend
+        end
+    end
+
+    return false -- User is not a friend
+end
+
+--- Sets a custom status for the user.
+--- @param status string
+--- @param expires number | nil -- Timestamp when the custom status expires
+--- @return boolean
+function userFunctions:setCustomStatus(status, expires)
+    if type(status) ~= "string" or (expires and type(expires) ~= "number") then
+        return false
+    end
+
+    self.customStatus = status
+    self.customStatusExpires = expires or nil
+
+    return true
+end
+
+--- Gets the user's custom status.
+--- @return string | nil, number | nil -- status, expires
+function userFunctions:getCustomStatus()
+    if self.customStatusExpires and os.time() > self.customStatusExpires then
+        self.customStatus = nil
+        self.customStatusExpires = nil
+    end
+    return self.customStatus, self.customStatusExpires
+end
+
+--- Refresh userdata from the server.
+function userFunctions:refresh()
+    if SERVER then return false end
+
+    Request.request(
+        "user.get",
+        { self.id },
+        self.id,
+        function(success, user)
+            if not success then
+                return false, user -- user is the error message
+            end
+
+            if not user or type(user) ~= "table" then
+                return false, "Invalid user data received"
+            end
+
+            -- Update the current user's data
+            for key, value in pairs(user) do
+                if self[key] ~= nil then
+                    self[key] = value
+                end
+            end
+
+            return true, self
+        end,
+        10,
+        "get"
+    )
+end
+
+return {
+    newUser = newUser,
+    userMetatable = userMetatable,
+    userFunctions = userFunctions,
+    loadUser = loadUser,
+}

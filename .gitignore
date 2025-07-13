@@ -1,3 +1,7 @@
 .vscode/
 .VSCodeCounter/
 .vs/
+
+*.dll
+*.exe
+*.ico

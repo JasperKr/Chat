@@ -10,6 +10,7 @@ local userMetatable = {}
 ---@field blockedUsers ID[]
 ---@field privileges number -- Server side only
 ---@field profilePicture love.ImageData | nil
+---@field profilePictureTexture love.Texture | nil -- Client side only
 ---@field customStatus string | nil
 ---@field customStatusExpires number | nil -- Timestamp when the custom status expires
 local userFunctions = {}
@@ -29,14 +30,36 @@ local function newUser(id, name, password)
     user.chatrooms = {}
     user.friends = {}
     user.blockedUsers = {}
-    user.privileges = 1 -- Server side only
+    user.privileges = 1              -- Server side only
     user.profilePicture = nil
+    user.profilePictureTexture = nil -- Client side only
     user.customStatus = nil
     user.customStatusExpires = nil
 
     setmetatable(user, userMetatable)
 
     return user
+end
+
+--- Circularizes the profile picture to make it round.
+---@param imagedata love.ImageData
+local function circularizeProfilePicture(imagedata)
+    local w, h = imagedata:getDimensions()
+    local cw, ch = w / 2, h / 2
+    local center = math.min(cw, ch) - 5
+
+    imagedata:mapPixel(function(x, y, r, g, b, a)
+        local dx = x - cw
+        local dy = y - ch
+
+        local distance = math.sqrt(dx * dx + dy * dy)
+
+        if distance >= center then
+            return r, g, b, math.min(1 - math.max(math.min((distance - center) * 0.2, 1), 0), a) -- bit of antialiasing
+        end
+        return r, g, b,
+            a                                                                                    -- Keep the original pixel color
+    end)
 end
 
 --- Loads a user from a table.
@@ -51,6 +74,13 @@ local function loadUser(user)
     -- Ensure the user has a valid status
     if not (user.status == "online" or user.status == "offline" or user.status == "away") then
         user.status = "offline"
+    end
+
+    print("Loading user:", user.id, user.name, type(user.profilePicture))
+    if user.profilePicture and type(user.profilePicture) == "string" then
+        user.profilePicture = love.image.newImageData(love.data.newByteData(user.profilePicture))
+
+        circularizeProfilePicture(user.profilePicture)
     end
 
     setmetatable(user, userMetatable)
@@ -191,6 +221,20 @@ function userFunctions:getCustomStatus()
     return self.customStatus, self.customStatusExpires
 end
 
+--- Gets the user's profile picture.
+--- @return love.ImageData | nil
+function userFunctions:getProfilePicture()
+    return self.profilePicture
+end
+
+--- Sets the user's profile picture.
+--- @param imageData love.ImageData
+--- @return boolean
+function userFunctions:setProfilePicture(imageData)
+    self.profilePicture = imageData
+    return true
+end
+
 --- Refresh userdata from the server.
 function userFunctions:refresh()
     if SERVER then return false end
@@ -211,7 +255,16 @@ function userFunctions:refresh()
             -- Update the current user's data
             for key, value in pairs(user) do
                 if self[key] ~= nil then
-                    self[key] = value
+                    if key == "profilePicture" and value then
+                        -- If the profile picture is provided, decode it
+                        self.profilePicture = love.image.newImageData(value)
+
+                        circularizeProfilePicture(self.profilePicture)
+
+                        self.profilePictureTexture:release()
+                    else
+                        self[key] = value
+                    end
                 end
             end
 
@@ -220,6 +273,38 @@ function userFunctions:refresh()
         10,
         "get"
     )
+end
+
+--- Update server-side user data.
+--- @return boolean, string?
+function userFunctions:updateServerData()
+    if SERVER then return false, "This function can only be called on the client" end
+
+    local success, err = Request.request(
+        "user.update",
+        { self.id, {
+            name = self.name,
+            status = self.status,
+            lastActive = self.lastActive,
+            chatrooms = self.chatrooms,
+            friends = self.friends,
+            blockedUsers = self.blockedUsers,
+            privileges = self.privileges,
+            profilePicture = self.profilePicture and self.profilePicture:encode("png"):getString() or nil,
+            customStatus = self.customStatus,
+            customStatusExpires = self.customStatusExpires
+        } },
+        self.id,
+        nil, -- No reply needed
+        10,
+        "put"
+    )
+
+    if not success then
+        return false, err
+    end
+
+    return true
 end
 
 return {

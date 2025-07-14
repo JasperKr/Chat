@@ -54,7 +54,7 @@ return
             end
 
             for key, value in pairs(data) do
-                if key ~= "id" and user[key] ~= nil then
+                if key ~= "id" then
                     user[key] = value
                 end
             end

@@ -45,6 +45,9 @@ GUIState = {
     currentChatroom = nil, ---@type Chatroom|nil
     loginUsername = ffi.new("char[?]", maxUsernameLength),
     loginPassword = ffi.new("char[?]", maxPasswordLength),
+
+    selectedSettingsPage = 1,                       -- Index of the currently selected settings page
+    profilePictureSize = ffi.new("ImVec2", 32, 32), -- Size for profile picture display
 }
 
 local pendingChatroomRequests = {}
@@ -125,9 +128,12 @@ local function drawApp()
 
             if Imgui.Button("Logout") then
                 user = nil
+
                 GUIState.currentChatroom = nil
                 GUIState.loginPageOpen = true
                 GUIState.registerPageOpen = false
+
+                love.filesystem.remove("lastLogin.txt")
             end
 
             Imgui.Separator()
@@ -138,6 +144,13 @@ local function drawApp()
 
             Imgui.End()
         end
+
+        if user == nil then
+            Imgui.End()
+            return
+        end
+
+        ---@cast user User
 
         local room = GUIState.currentChatroom
         if Imgui.Begin("Chat") and GUIState.currentChatroom and room then
@@ -157,6 +170,18 @@ local function drawApp()
             for i, message in ipairs(room.messages) do
                 -- local messageHeight = textLineHeight * (message.newLineCount + 2) + 8
                 Imgui.BeginGroup()
+                if user.profilePicture then
+                    if not user.profilePictureTexture then
+                        user.profilePictureTexture = love.graphics.newTexture(user.profilePicture)
+                    end
+                end
+
+                if user.profilePictureTexture then
+                    Imgui.Image(user.profilePictureTexture, GUIState.profilePictureSize)
+                else
+                    Imgui.Dummy(GUIState.profilePictureSize)
+                end
+                Imgui.SameLine()
                 Imgui.Text(message.fromName)
                 Imgui.SameLine()
                 Imgui.TextDisabled(os.date("%H:%M:%S", message.timestamp))
@@ -369,6 +394,8 @@ local function registerPage()
                         return
                     end
 
+                    ---@cast user User
+
                     GUIState.currentChatroom = nil -- Reset to global chat after registration
                     GUIState.loginPageOpen = false
                     GUIState.registerPageOpen = false
@@ -416,18 +443,136 @@ local function registerPage()
     Imgui.End()
 end
 
+--- Loads image data from a file and returns it.
+---@param files string[]
+---@param filtername string
+---@param errorstring string|nil
+---@return boolean
+---@return love.ImageData|love.CompressedImageData|string
+local function loadImagedata(files, filtername, errorstring)
+    if errorstring then
+        return false, "Error: " .. errorstring
+    end
+
+    if #files == 0 then
+        return false, "No files selected"
+    end
+
+    local file = files[1]:gsub("\\", "/") ---@type string
+
+    local directory = file:match("^(.+)/[^/]+$")    -- "C:/path/to/file.png" -> "C:/path/to/"
+    local filename = file:match("^.+[\\/]([^/]+)$") -- "C:/path/to/file.png" -> "file.png"
+    local extension = file:match("^.+(%..+)$")      -- "file.png" -> ".png"
+
+    love.filesystem.mountFullPath(directory, "profile_pictures", "read")
+    local imageData
+
+    if extension == ".DDS" or extension == ".dds" then
+        imageData = love.image.newCompressedData("profile_pictures/" .. filename)
+    else
+        imageData = love.image.newImageData("profile_pictures/" .. filename)
+    end
+    love.filesystem.unmountFullPath("profile_pictures")
+
+    if not imageData then
+        return false, "Failed to load image data from file: " .. file
+    end
+
+    if imageData:getWidth() > 512 or imageData:getHeight() > 512 then
+        return false, "Profile picture must be at most 512x512 pixels"
+    end
+
+    return true, imageData
+end
+
+local function drawProfileSettings()
+    Imgui.Text("Profile Settings")
+    Imgui.Separator()
+
+    if Imgui.Button("Change Profile Picture") then
+        -- Open file dialog to select a new profile picture
+        love.window.showFileDialog("openfile", function(files, filtername, errorstring)
+            local success, loaded, imagedata = pcall(loadImagedata, files, filtername, errorstring)
+            if not success or not imagedata then
+                print("Failed to load image data:", loaded)
+                return
+            end
+            if not loaded then
+                print("Error loading image data:", imagedata)
+                return
+            end
+
+            user:setProfilePicture(imagedata)
+            user:updateServerData()
+        end, { title = "Select Profile Picture", filter = { "png", "jpg", "jpeg", "DDS", "dds", "bmp" } })
+    end
+    Imgui.Text("Max profile picture size: 512x512 pixels")
+
+    if user.profilePicture then
+        if not user.profilePictureTexture then
+            user.profilePictureTexture = love.graphics.newTexture(user.profilePicture)
+        end
+        Imgui.Image(user.profilePictureTexture, ffi.new("ImVec2", 100, 100))
+    else
+        Imgui.Text("No profile picture set")
+    end
+
+    if Imgui.Button("Set Custom Status") then
+        -- Open a dialog to set custom status
+        local status = Imgui.InputText("Custom Status", user.customStatus or "", 256)
+        user:setCustomStatus(status)
+    end
+
+    local status, expires = user:getCustomStatus()
+    if status then
+        Imgui.Text("Custom Status: " .. status)
+        if expires then
+            Imgui.Text("Expires at: " .. os.date("%Y-%m-%d %H:%M:%S", expires))
+        end
+    else
+        Imgui.Text("No custom status set")
+    end
+end
+
+local settingsPages = {
+    { name = "Theme",         draw = Imgui.ShowStyleEditor },
+    { name = "Profile",       draw = drawProfileSettings },
+    { name = "Privacy",       draw = function() Imgui.Text("Privacy settings go here") end },
+    { name = "Notifications", draw = function() Imgui.Text("Notification settings go here") end },
+}
+
 local function settingsPage()
     Imgui.SetNextWindowSize(ffi.new("ImVec2", love.graphics.getDimensions()))
     Imgui.SetNextWindowPos(ffi.new("ImVec2", 0, 0))
 
-    if Imgui.Begin("Settings", nil, bit.bor(Imgui.ImGuiWindowFlags_NoResize, Imgui.ImGuiWindowFlags_NoMove, Imgui.ImGuiWindowFlags_NoCollapse)) then
-        if Imgui.Button("Close") then
-            GUIState.settingsPageOpen = false
+    if Imgui.Begin("App", nil, flags) then
+        Imgui.SetCursorScreenPos(ffi.new("ImVec2", 0, 0))
+        Imgui.DockSpace(1, ffi.new("ImVec2", love.graphics.getDimensions()),
+            bit.bor(
+                Imgui.ImGuiDockNodeFlags_AutoHideTabBar
+            )
+        )
+
+        if Imgui.Begin("Settings") then
+            if Imgui.Button("Close") then
+                GUIState.settingsPageOpen = false
+            end
+
+            Imgui.Separator()
+
+            settingsPages[GUIState.selectedSettingsPage].draw()
         end
+        Imgui.End()
 
-        Imgui.Separator()
+        if Imgui.Begin("Settings Select") then
+            for i, page in ipairs(settingsPages) do
+                if Imgui.Selectable_Bool(page.name, GUIState.selectedSettingsPage == i) then
+                    GUIState.selectedSettingsPage = i
+                end
+            end
 
-        Imgui.ShowStyleEditor()
+            Imgui.End()
+        end
     end
     Imgui.End()
 end

@@ -67,6 +67,7 @@ function chatroomFunctions:addMessage(message)
 
         if os.time() - comboOrSentTime <= 600 and #lastMessage.text + #message.text < 4096 then
             lastMessage.text = lastMessage.text .. "\n" .. message.text
+            table.insert(lastMessage.combinedMessages, message.text)
             lastMessage.newLineCount = lastMessage.newLineCount + message.newLineCount
             lastMessage.timestamp = math.min(lastMessage.timestamp, message.timestamp)
             lastMessage.comboTimeStart = comboOrSentTime -- keep the original combo start time
@@ -75,8 +76,9 @@ function chatroomFunctions:addMessage(message)
         end
     else
         table.insert(self.messages, message)
-        self.lastMessageTimestamp = math.max(self.lastMessageTimestamp, message.timestamp)
     end
+
+    self.lastMessageTimestamp = math.max(self.lastMessageTimestamp, message.timestamp)
 end
 
 --- Adds a user to the chatroom.

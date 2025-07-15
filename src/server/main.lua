@@ -21,6 +21,7 @@ end
 
 addController(require("Controllers.userController"))
 addController(require("Controllers.chatroomController"))
+addController(require("Controllers.channelController"))
 
 Connection = {
     host = Enet.host_create("127.0.0.1:5111"),

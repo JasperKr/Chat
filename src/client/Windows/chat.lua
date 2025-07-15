@@ -92,21 +92,87 @@ end
 
 function DrawChat()
     local room = GUIState.currentChatroom
+    local channel = GUIState.currentChannel
+
     if Imgui.Begin("Chat") then
         local height = calculateChatboxHeight()
 
-        if GUIState.currentChatroom and room then
+        if GUIState.currentChatroom and room and channel then
             Imgui.Text(GUIState.currentChatroom.name)
+            Imgui.SameLine()
+            if Imgui.ArrowButton("##ChatroomArrow", Imgui.ImGuiDir_Down) then
+                Imgui.OpenPopup_Str("ChatroomOptions")
+            end
+            if Imgui.BeginPopup("ChatroomOptions") then
+                if Imgui.Selectable_Bool("Leave Chatroom") then
+                    Request.request(
+                        "chatroom.leave",
+                        { CurrentUser.id, room.id },
+                        CurrentUser.id,
+                        function(success, message)
+                            if success then
+                                GUIState.currentChatroom = nil
+                                GUIState.selectedChannelPerChatroom[room.id] = nil
+                                GUIState.currentChannel = nil
+
+                                for i, chatroom in ipairs(Cache.chatrooms) do
+                                    if chatroom.id == room.id then
+                                        table.remove(Cache.chatrooms, i)
+                                        break
+                                    end
+                                end
+
+                                print("Left chatroom:", room.name)
+                            else
+                                print("Failed to leave chatroom:", message)
+                            end
+                        end,
+                        nil,
+                        "post"
+                    )
+                end
+
+                -- The server won't even allow deleting chatrooms that are not owned by the user
+                -- so just don't show the option if the user is not the owner
+                if room.ownerID == CurrentUser.id and Imgui.Selectable_Bool("Delete Chatroom") then
+                    Request.request(
+                        "chatroom.delete",
+                        { CurrentUser.id, room.id },
+                        CurrentUser.id,
+                        function(success, message)
+                            if success then
+                                GUIState.currentChatroom = nil
+                                GUIState.selectedChannelPerChatroom[room.id] = nil
+                                GUIState.currentChannel = nil
+
+                                for i, chatroom in ipairs(Cache.chatrooms) do
+                                    if chatroom.id == room.id then
+                                        table.remove(Cache.chatrooms, i)
+                                        break
+                                    end
+                                end
+                                print("Deleted chatroom:", room.name)
+                            else
+                                print("Failed to delete chatroom:", message)
+                            end
+                        end,
+                        nil,
+                        "post"
+                    )
+                end
+
+                Imgui.EndPopup()
+            end
             Imgui.Separator()
         end
 
         Imgui.GetContentRegionAvail(contentRegionAvailable)
         local messagesChildHeight = contentRegionAvailable.y - height - 20 -- Reserve space for message input
 
-        if Imgui.BeginChild_Str("Messages", ffi.new("ImVec2", 0, messagesChildHeight), true) and GUIState.currentChatroom and room then
+        if Imgui.BeginChild_Str("Messages", ffi.new("ImVec2", 0, messagesChildHeight), true) and GUIState.currentChatroom and room and channel then
             ---TODO: dynamically load messages
 
-            table.sort(room.messages, function(a, b)
+            table.sort(channel.messages, function(a, b)
                 return a.timestamp < b.timestamp
             end)
 
@@ -114,7 +180,7 @@ function DrawChat()
 
             -- local textLineHeight = Imgui.GetTextLineHeight()
 
-            for i, message in ipairs(room.messages) do
+            for i, message in ipairs(channel.messages) do
                 -- local messageHeight = textLineHeight * (message.newLineCount + 2) + 8
 
                 if not Cache.users[message.from] then
@@ -159,7 +225,7 @@ function DrawChat()
         --     Imgui.SetNextWindowFocus()
         -- end
 
-        if Imgui.BeginChild_Str("Message Box", nil, true) and GUIState.currentChatroom then
+        if Imgui.BeginChild_Str("Message Box", nil, true) and GUIState.currentChatroom and channel then
             for i, attachment in ipairs(GUIState.attachments) do
                 local texture = Attachments.getAttachmentTexture(attachment)
                 if texture then
@@ -197,6 +263,7 @@ function DrawChat()
                         "chatroom.addMessage",
                         {
                             GUIState.currentChatroom.id,
+                            channel.id,
                             ChatMessage.newChatMessage(message, CurrentUser.id, CurrentUser.name,
                                 GUIState.attachments)
                         },

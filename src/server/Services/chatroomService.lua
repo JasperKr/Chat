@@ -22,6 +22,15 @@ ChatroomService = {
         return ChatroomService.chatrooms:get(chatroomID)
     end,
 
+    getChatroomByName = function(name)
+        for _, chatroom in ipairs(ChatroomService.chatrooms.items) do
+            if chatroom.name == name then
+                return chatroom
+            end
+        end
+        return nil
+    end,
+
     getAllChatrooms = function()
         return ChatroomService.chatrooms.items
     end,
@@ -35,7 +44,7 @@ ChatroomService = {
         love.filesystem.createDirectory("chatrooms")
         for _, chatroom in ipairs(ChatroomService.chatrooms.items) do
             local fileName = "chatrooms/" .. chatroom.id .. ".bin"
-            love.filesystem.write(fileName, Buffer.encode(chatroom))
+            love.filesystem.write(fileName, chatroom:encode())
         end
     end,
 
@@ -47,10 +56,9 @@ ChatroomService = {
                 local filePath = "chatrooms/" .. fileName
                 local data = love.filesystem.read(filePath)
                 if data then
-                    local chatroom = Buffer.decode(data)
-                    if chatroom and type(chatroom) == "table" then
-                        ChatroomService.chatrooms:add(Chatroom.loadChatroom(chatroom))
-                        print("Loaded chatroom: " .. chatroom.id .. " from " .. filePath)
+                    local success, chatroom = Chatroom.decodeNewChatroom(data)
+                    if success then
+                        ChatroomService.chatrooms:add(chatroom)
                     else
                         print("Failed to decode chatroom from file: " .. filePath)
                     end

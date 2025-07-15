@@ -14,6 +14,7 @@ local function newIdIndexedTable(key)
         indexTable = {},
         items = {},
         key = key or "id",
+        keepOrder = false
     }
     setmetatable(t, indexedTableMetatable)
     return t
@@ -29,7 +30,15 @@ local objectIndexedTableMetatable = {
 ---@generic T
 ---@return objectIndexedTable<T>
 local function newObjectIndexedTable()
-    return setmetatable({ indexTable = {}, items = {} }, objectIndexedTableMetatable)
+    return setmetatable({ indexTable = {}, items = {}, keepOrder = false }, objectIndexedTableMetatable)
+end
+
+function iDIndexedTableFunctions:setKeepOrder(keep)
+    if keep == nil then
+        keep = false
+    end
+
+    self.keepOrder = keep
 end
 
 ---@generic T
@@ -38,6 +47,15 @@ end
 function iDIndexedTableFunctions:add(v)
     table.insert(self.items, v)
     self.indexTable[v[self.key]] = #self.items
+end
+
+---@generic T
+---@param v T[]
+---@param self iDIndexedTable<T>
+function iDIndexedTableFunctions:addRange(v)
+    for _, item in ipairs(v) do
+        self:add(item)
+    end
 end
 
 function iDIndexedTableFunctions:get(id)
@@ -51,6 +69,18 @@ end
 function iDIndexedTableFunctions:remove(index)
     -- get the object at the index
     local w = self.items[index]
+
+    if self.keepOrder then -- slow remove
+        table.remove(self.items, index)
+        self.indexTable[w[self.key]] = nil
+
+        -- rebuild the index table
+        for i = index, #self.items do
+            self.indexTable[self.items[i][self.key]] = i
+        end
+
+        return w
+    end
 
     -- if the object is the last object in the table, we can just remove it
     if index == #self.items then
@@ -80,6 +110,18 @@ function iDIndexedTableFunctions:removeAsObject(v)
 
         -- if the object is in the table
         if index then
+            if self.keepOrder then -- slow remove
+                table.remove(self.items, index)
+                self.indexTable[v[self.key]] = nil
+
+                -- rebuild the index table
+                for i = index, #self.items do
+                    self.indexTable[self.items[i][self.key]] = i
+                end
+
+                return v
+            end
+
             -- if the object is the last object in the table, we can just remove it
             if index == #self.items then
                 self.indexTable[v[self.key]] = nil
@@ -114,49 +156,90 @@ function iDIndexedTableFunctions:removeById(id)
     end
 end
 
+function objectIndexedTableFunctions:setKeepOrder(keep)
+    if keep == nil then
+        keep = false
+    end
+
+    self.keepOrder = keep
+end
+
 function objectIndexedTableFunctions:add(v)
     table.insert(self.items, v)
     self.indexTable[v] = #self.items
 end
 
+function objectIndexedTableFunctions:addRange(v)
+    for _, item in ipairs(v) do
+        self:add(item)
+    end
+end
+
 ---removes something from the table
 ---@param i number
 function objectIndexedTableFunctions:remove(i)
-    local w = self.items[i]
-    if i == #self.items then
-        self.indexTable[w] = nil
-        return table.remove(self.items, i)
-    else
-        local lastIndex = #self.items
-        local lastObject = self.items[lastIndex]
-        self.items[i] = lastObject
-        self.indexTable[lastObject] = i
-        self.indexTable[w] = nil
-        return table.remove(self.items, #self.items)
+    if self.keepOrder then -- slow remove
+        local obj = table.remove(self.items, i)
+        if obj then
+            self.indexTable[obj] = nil
+        end
+
+        -- rebuild the index table
+        for j = i, #self.items do
+            self.indexTable[self.items[j]] = j
+        end
+    else -- fast remove
+        local w = self.items[i]
+        if i == #self.items then
+            self.indexTable[w] = nil
+            return table.remove(self.items, i)
+        else
+            local lastIndex = #self.items
+            local lastObject = self.items[lastIndex]
+            self.items[i] = lastObject
+            self.indexTable[lastObject] = i
+            self.indexTable[w] = nil
+            return table.remove(self.items, #self.items)
+        end
     end
 end
 
 function objectIndexedTableFunctions:removeAsObject(v)
     assert(v, "Object is nil")
-    local i = self.indexTable[v]
-    if i then
-        if i == #self.items then
+    if self.keepOrder then -- slow remove
+        local index = self.indexTable[v]
+        if index then
+            table.remove(self.items, index)
             self.indexTable[v] = nil
-            table.remove(self.items)
-        else
-            local lastObject = self.items[#self.items]
-            self.items[i] = lastObject
-            if lastObject then
-                self.indexTable[lastObject] = i
+
+            -- rebuild the index table
+            for i = index, #self.items do
+                self.indexTable[self.items[i]] = i
             end
-            self.indexTable[v] = nil
-            table.remove(self.items)
+
+            return v
+        end
+    else -- fast remove
+        local i = self.indexTable[v]
+        if i then
+            if i == #self.items then
+                self.indexTable[v] = nil
+                table.remove(self.items)
+            else
+                local lastObject = self.items[#self.items]
+                self.items[i] = lastObject
+                if lastObject then
+                    self.indexTable[lastObject] = i
+                end
+                self.indexTable[v] = nil
+                table.remove(self.items)
+            end
+
+            return true
         end
 
-        return true
+        return false
     end
-
-    return false
 end
 
 function objectIndexedTableFunctions:clear()

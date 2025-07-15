@@ -25,6 +25,11 @@ UserService = {
         end
 
         local user = UserService.get(userID)
+
+        if not user then
+            return nil, "User not found"
+        end
+
         local privileges = user.privileges
 
         if Privileges.hasPrivileges(privileges, 3) then

@@ -10,11 +10,33 @@ return
                 return false, "Failed to create chatroom"
             end
 
-            if not UserService.get(userID) then
+            local user = UserService.get(userID)
+
+            if not user then
                 return false, "User not found"
             end
 
-            return true, ChatroomService.addChatroom(chatroom)
+            if ChatroomService.getChatroomByName(name) then
+                return false, "Chatroom with this name already exists"
+            end
+
+            local success, errmsg = ChatroomService.addChatroom(chatroom)
+
+            if not success then
+                return false, errmsg
+            end
+
+            success, errmsg = chatroom:addUser(user)
+
+            if not success then
+                return false, errmsg
+            end
+
+            if not user:addChatroom(chatroom) then
+                return false, "Failed to add chatroom to user"
+            end
+
+            return true, chatroom
         end,
 
         get = function(chatroomID)
@@ -67,24 +89,34 @@ return
             return true, "Ownership transferred successfully"
         end,
 
-        getMessages = function(chatroomID, from, to)
+        getMessages = function(chatroomID, channelID, from, to)
             local chatroom = ChatroomService.getChatroom(chatroomID)
 
             if not chatroom then
-                return nil, "Chatroom not found"
+                return false, "Chatroom not found"
             end
 
-            to = math.min(to, #chatroom.messages)
+            local channel = chatroom.channels:get(channelID)
+
+            if not channel then
+                print("Channel not found in chatroom: " .. chatroomID)
+                for _, c in ipairs(chatroom.channels.items) do
+                    print("Available channel: " .. c.name, c.id)
+                end
+                return false, "Channel not found"
+            end
+
+            to = math.min(to, #channel.messages)
             print("Getting messages from " .. from .. " to " .. to .. " in chatroom " .. chatroomID)
 
             if from < 1 or from > to then
-                return nil, "Invalid message range"
+                return false, "Invalid message range"
             end
 
             table.clear(tempTable)
 
             for i = from, to do
-                table.insert(tempTable, chatroom.messages[i])
+                table.insert(tempTable, channel.messages[i])
             end
 
             return true, tempTable
@@ -191,7 +223,7 @@ return
         ---@param message ChatMessage
         ---@return boolean
         ---@return string
-        addMessage = function(chatroomID, message)
+        addMessage = function(chatroomID, channelID, message)
             message.timestamp = os.time() -- use server time for consistency
             local chatroom = ChatroomService.getChatroom(chatroomID)
 
@@ -208,7 +240,13 @@ return
                 return false, "User not found"
             end
 
-            chatroom:addMessage(message)
+            local channel = chatroom.channels:get(channelID)
+
+            if not channel then
+                return false, "Channel not found"
+            end
+
+            channel:addMessage(message)
 
             local messageUpdate = Message.newMessage(nil,
                 {

@@ -4,7 +4,7 @@ local chatroomMetatable = {}
 ---@field id string
 ---@field ownerID ID
 ---@field name string
----@field messages ChatMessage[]
+---@field channels iDIndexedTable<Channel>
 ---@field users ID[] -- List of user IDs in the chatroom
 ---@field bannedUsers ID[] -- List of user IDs that are banned from the chatroom
 ---@field lastMessageTimestamp number
@@ -21,7 +21,11 @@ local function newChatroom(name, id, ownerID)
     chatroom.id = id or ID.newID()
     chatroom.ownerID = ownerID
     chatroom.name = name or "Unnamed Chatroom"
-    chatroom.messages = {}
+
+    chatroom.channels = Tables.newIdIndexedTable()
+    chatroom.channels:setKeepOrder(true)
+    chatroom.channels:add(Channel.newChannel("General", nil)) -- Default channel
+
     chatroom.users = {}
     chatroom.bannedUsers = {}
     chatroom.lastMessageTimestamp = 0
@@ -35,7 +39,17 @@ end
 ---@param data table
 ---@return Chatroom
 local function loadChatroom(data)
-    return setmetatable(data, chatroomMetatable) -- no special handling needed for now
+    local chatroom = setmetatable(data, chatroomMetatable)
+
+    local channels = Tables.newIdIndexedTable()
+    channels:setKeepOrder(true)
+    for _, channelData in ipairs(data.channels or {}) do
+        channels:add(Channel.loadChannel(channelData))
+    end
+
+    chatroom.channels = channels
+
+    return chatroom
 end
 
 --- Decodes a new chatroom from the received data.
@@ -48,31 +62,48 @@ local function decodeNewChatroom(data)
     end
 
     local chatroom = newChatroom(decoded.name, decoded.id)
-    chatroom.messages = decoded.messages or {}
+    if decoded.messages then -- old data, channels didn't exist yet
+        -- create "General" channel and add messages there
+        local generalChannel = chatroom.channels.items[1] or Channel.newChannel("General", nil)
+
+        for _, message in ipairs(decoded.messages) do
+            generalChannel:addMessage(message)
+        end
+
+        chatroom.channels:add(generalChannel)
+    end
+
+    for _, channelData in ipairs(decoded.channels or {}) do
+        local success, channel = Channel.decodeNewChannel(channelData)
+
+        if success then
+            chatroom.channels:add(channel)
+        else
+            print("Failed to decode channel: " .. channel)
+        end
+    end
+
     chatroom.users = decoded.users or {}
     chatroom.lastMessageTimestamp = decoded.lastMessageTimestamp or 0
 
     return true, chatroom
 end
 
---- Adds a message to the chatroom.
---- @param message ChatMessage
-function chatroomFunctions:addMessage(message)
-    local lastMessage = self:getLastMessage()
+function chatroomFunctions:encode()
+    local data = {
+        id = self.id,
+        ownerID = self.ownerID,
+        name = self.name,
+        channels = {},
+        users = self.users,
+        lastMessageTimestamp = self.lastMessageTimestamp,
+    }
 
-    if lastMessage and lastMessage.from == message.from then
-        -- if combo start or last message timestamp is within 10 minutes, combine messages
-
-        if message.timestamp - lastMessage.timestamp <= 600 then
-            table.insert(lastMessage.combinedMessages, message)
-        else
-            table.insert(self.messages, message)
-        end
-    else
-        table.insert(self.messages, message)
+    for _, channel in ipairs(self.channels.items) do
+        table.insert(data.channels, channel:encode())
     end
 
-    self.lastMessageTimestamp = math.max(self.lastMessageTimestamp, message.timestamp)
+    return Buffer.encode(data)
 end
 
 --- Adds a user to the chatroom.
@@ -80,7 +111,7 @@ end
 function chatroomFunctions:addUser(user)
     if not self:isUserInChatroom(user.id) then
         table.insert(self.users, user.id)
-        return true
+        return true, "User added to chatroom"
     else
         return false, "User already in chatroom"
     end
@@ -111,31 +142,52 @@ function chatroomFunctions:removeUser(userID)
     return false
 end
 
---- Gets the last message in the chatroom.
---- @return ChatMessage|nil
-function chatroomFunctions:getLastMessage()
-    if #self.messages == 0 then
-        return nil
-    end
-    return self.messages[#self.messages]
-end
-
---- Gets the number of messages in the chatroom.
---- @return number
-function chatroomFunctions:getMessageCount()
-    return #self.messages
-end
-
 --- Gets the number of users in the chatroom.
 --- @return number
 function chatroomFunctions:getUserCount()
     return #self.users
 end
 
+--- Gets the number of channels in the chatroom.
+--- @return number
+function chatroomFunctions:getChannelCount()
+    return #self.channels.items
+end
+
+--- Get the channels in the chatroom.
+--- @return Channel[]
+function chatroomFunctions:getChannels()
+    return self.channels.items
+end
+
+--- Gets the channel by its name.
+--- @param name string
+--- @return Channel|nil
+function chatroomFunctions:getChannelByName(name)
+    for _, channel in pairs(self.channels.items) do
+        if channel.name == name then
+            return channel
+        end
+    end
+    return nil
+end
+
+--- Get the channel by its ID.
+--- @param id ID
+--- @return Channel|nil
+function chatroomFunctions:getChannelByID(id)
+    return self.channels:get(id)
+end
+
+--- Adds a channel to the chatroom.
+--- @param channel Channel
+function chatroomFunctions:addChannel(channel)
+    self.channels:add(channel)
+    return true
+end
+
 return {
     newChatroom = newChatroom,
     decodeNewChatroom = decodeNewChatroom,
-    chatroomMetatable = chatroomMetatable,
-    chatroomFunctions = chatroomFunctions,
     loadChatroom = loadChatroom,
 }

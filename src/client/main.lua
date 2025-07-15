@@ -5,6 +5,8 @@ require("Windows.chat")
 require("Windows.login")
 require("Windows.connect")
 require("Windows.chatrooms")
+require("Windows.register")
+require("Windows.channels")
 
 require("Windows.Settings.profile")
 
@@ -49,8 +51,11 @@ GUIState = {
     registerPageOpen = false,
     settingsPageOpen = false,
 
-    userInput = ffi.new("char[?]", maxUserInputLength),
     currentChatroom = nil, ---@type Chatroom|nil
+    currentChannel = nil, ---@type Channel|nil
+    selectedChannelPerChatroom = {}, -- Stores selected channel for each chatroom
+
+    userInput = ffi.new("char[?]", maxUserInputLength),
     loginUsername = ffi.new("char[?]", maxUsernameLength),
     loginPassword = ffi.new("char[?]", maxPasswordLength),
 
@@ -70,8 +75,8 @@ GUIState = {
 }
 
 Cache = {
-    users = {},
-    chatrooms = {},
+    users = {},     --- @type { [ID]: User }
+    chatrooms = {}, --- @type Chatroom[]
 }
 
 function SmoothScrollToTop()
@@ -140,7 +145,7 @@ local function drawApp()
                 love.filesystem.remove("lastLogin.txt")
             end
 
-            Imgui.Separator()
+            Imgui.SameLine()
 
             if Imgui.Button("Settings") then
                 GUIState.settingsPageOpen = true
@@ -153,6 +158,8 @@ local function drawApp()
             Imgui.End()
             return
         end
+
+        DrawChannels()
 
         DrawChat()
 
@@ -218,6 +225,23 @@ local function settingsPage()
     Imgui.End()
 end
 
+local function printTable(data, depth)
+    if type(data) == "table" then
+        depth = depth or 0
+        local indent = string.rep("  ", depth)
+        for k, v in pairs(data) do
+            if type(v) == "table" then
+                print(indent .. tostring(k) .. ":")
+                printTable(v, depth + 1)
+            else
+                print(indent .. tostring(k) .. ": " .. tostring(v))
+            end
+        end
+    else
+        print(tostring(data))
+    end
+end
+
 local function fetchChatrooms()
     for i, chatroom in ipairs(CurrentUser.chatrooms) do
         local roomLoaded = false
@@ -229,42 +253,51 @@ local function fetchChatrooms()
         end
 
         if not roomLoaded then
-            print("Requesting chatroom:", chatroom)
-
-            local success, errmsg = Request.request(
+            Request.request(
                 "chatroom.get",
                 { chatroom },
                 CurrentUser.id,
                 function(success, chatroomData)
-                    print("Received chatroom data:", chatroomData)
                     if not success then
                         print("Failed to get chatroom:", chatroomData)
                         return
                     end
 
-                    table.insert(Cache.chatrooms,
-                        Chatroom.newChatroom(chatroomData.name, chatroomData.id, chatroomData.ownerID))
+                    local room = Chatroom.loadChatroom(chatroomData)
+
+                    table.insert(Cache.chatrooms, room)
+
+                    Request.request(
+                        "channel.getAll",
+                        { room.id },
+                        CurrentUser.id,
+                        function(success, channels)
+                            if not success then
+                                print("Failed to get channels for chatroom:", room.id, channels)
+                            else
+                                for _, channel in ipairs(channels) do
+                                    room.channels:add(Channel.loadChannel(channel))
+                                end
+                            end
+                        end,
+                        nil,
+                        "get"
+                    )
                 end,
                 nil,
                 "get",
                 "once",
                 chatroom
             )
-
-            if not success then
-                print("Request failed:", errmsg)
-            else
-                print("Chatroom request sent successfully")
-            end
         end
     end
 end
 
 local onReceive = {
     ["message"] = function(content)
-        if GUIState.currentChatroom and GUIState.currentChatroom.id == content.chatroomID then
+        if GUIState.currentChannel and GUIState.currentChatroom.id == content.chatroomID then
             -- If the current chatroom is the one receiving the message, add it to the chatroom's messages
-            GUIState.currentChatroom:addMessage(content.message)
+            GUIState.currentChannel:addMessage(content.message)
         end
     end,
     ["requestReply"] = function(content)
@@ -291,13 +324,15 @@ function love.update(dt)
 
             CurrentUser = nil
             GUIState.currentChatroom = nil
+            GUIState.currentChannel = nil
 
             Connection.server = nil
             Connection.connected = false
             Connection.host:destroy()
+
+            return
         elseif event.type == "receive" then
             local message = event.data
-            print("Received message from server")
             local success, decodedMessage = Message.decodeMessage(message)
 
             if not success then
@@ -395,5 +430,6 @@ function love.quit()
         Connection.server:disconnect_now()
     end
     Connection.host:destroy()
-    Imgui.love.Shutdown()
+    -- Imgui.love.Shutdown() -- Sometimes errors due to event after shutdown
+    return false
 end

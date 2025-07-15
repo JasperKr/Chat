@@ -61,16 +61,10 @@ function chatroomFunctions:addMessage(message)
     local lastMessage = self:getLastMessage()
 
     if lastMessage and lastMessage.from == message.from then
-        local comboOrSentTime = lastMessage.comboTimeStart or lastMessage.timestamp
-
         -- if combo start or last message timestamp is within 10 minutes, combine messages
 
-        if os.time() - comboOrSentTime <= 600 and #lastMessage.text + #message.text < 4096 then
-            lastMessage.text = lastMessage.text .. "\n" .. message.text
-            table.insert(lastMessage.combinedMessages, message.text)
-            lastMessage.newLineCount = lastMessage.newLineCount + message.newLineCount
-            lastMessage.timestamp = math.min(lastMessage.timestamp, message.timestamp)
-            lastMessage.comboTimeStart = comboOrSentTime -- keep the original combo start time
+        if message.timestamp - lastMessage.timestamp <= 600 then
+            table.insert(lastMessage.combinedMessages, message)
         else
             table.insert(self.messages, message)
         end

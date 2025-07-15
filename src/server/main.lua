@@ -107,7 +107,7 @@ function love.update()
             else
                 local content = decodedMessage:getContent()
                 if decodedMessage:getDataType() == "table" and type(content) == "table" then
-                    print(decodedMessage:getFrom() .. " -> " .. content.path, unpack(content.args or {}))
+                    print(decodedMessage:getFrom() .. " -> " .. content.path)
 
                     -- check for non-list args
 

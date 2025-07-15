@@ -1,16 +1,19 @@
 package.path = package.path .. ";" .. love.filesystem.getSourceBaseDirectory() .. "/shared/?.lua"
+
 require("init")
+require("Windows.chat")
+require("Windows.login")
+require("Windows.connect")
+require("Windows.chatrooms")
+
+require("Windows.Settings.profile")
+
+Attachments = require("attachments")
+Shutdown = false
 
 Connection = {
-    host = Enet.host_create(),
+    connected = false,
 }
-
-Connection.server = Connection.host:connect("127.0.0.1:5111")
-
----@param file love.DroppedFile
-function love.filedropped(file)
-
-end
 
 local flags = bit.bor(
     Imgui.ImGuiWindowFlags_NoTitleBar,
@@ -21,15 +24,20 @@ local flags = bit.bor(
     Imgui.ImGuiWindowFlags_NoScrollbar
 )
 
-local maxUserInputLength = 4096
-local maxUsernameLength = 80
-local maxPasswordLength = 128
+function SmoothStep(a, b, t)
+    t = t * t * (3 - 2 * t) -- smoothstep
+    return a + (b - a) * t
+end
 
 ---@param text string
 function CountNewLines(text)
     local _, count = text:gsub("\n", "")
     return count
 end
+
+local maxUserInputLength = 4096
+local maxUsernameLength = 80
+local maxPasswordLength = 128
 
 GUIState = {
     justSentMessage = false,
@@ -48,48 +56,44 @@ GUIState = {
 
     selectedSettingsPage = 1,                       -- Index of the currently selected settings page
     profilePictureSize = ffi.new("ImVec2", 32, 32), -- Size for profile picture display
+
+    attachments = {},                               -- List of attachments for the current message
+    scrollToBottom = false,                         -- Flag to scroll to the bottom of the chat window
+    scrollStarted = false,
+    scrollStartY = 0,                               -- Starting Y position for scrolling
+    scrollMaxY = 0,                                 -- Maximum Y position for scrolling
+    scrollI = 0,                                    -- Scroll index for smooth scrolling
+
+    maxUserInputLength = maxUserInputLength,
+    maxUsernameLength = maxUsernameLength,
+    maxPasswordLength = maxPasswordLength
 }
 
-local pendingChatroomRequests = {}
-local chatrooms = {}
-local user
-local contentRegionAvailable = ffi.new("ImVec2", 0, 0)
+Cache = {
+    users = {},
+    chatrooms = {},
+}
 
-local function login(username, password)
-    Request.request(
-        "user.login",
-        {
-            username,
-            password
-        },
-        nil,
-        function(...)
-            local status, userOrError = ...
-            if not status then
-                print("Login failed:", userOrError)
-                GUIState.loginPageOpen = true
-                GUIState.registerPageOpen = false
-                return
-            end
+function SmoothScrollToTop()
+    if not GUIState.scrollToBottom then
+        return
+    end
 
-            status, user = User.loadUser(userOrError)
+    if not GUIState.scrollStarted then
+        GUIState.scrollStarted = true
+        GUIState.scrollStartY = Imgui.GetScrollY()
+        GUIState.scrollMaxY = Imgui.GetScrollMaxY()
+    end
 
-            if not status or type(user) ~= "table" then
-                print("Failed to load user:", user)
-                GUIState.loginPageOpen = true
-                GUIState.registerPageOpen = false
-                user = nil
-                return
-            end
+    GUIState.scrollI = GUIState.scrollI + love.timer.getDelta() * 2 -- 0.5 sec
 
-            GUIState.loginPageOpen = false
-            GUIState.registerPageOpen = false
+    if GUIState.scrollI > 1 then
+        GUIState.scrollI = 1
+        GUIState.scrollToBottom = false -- Stop scrolling when we reach the top
+        GUIState.scrollStarted = false
+    end
 
-            print("User loaded:", user.id)
-        end,
-        nil,
-        "post"
-    )
+    Imgui.SetScrollY(SmoothStep(GUIState.scrollStartY, GUIState.scrollMaxY, GUIState.scrollI))
 end
 
 local function loginFromLastLogin()
@@ -99,7 +103,7 @@ local function loginFromLastLogin()
         local loginData = Buffer.decode(data)
 
         if type(loginData) == "table" and loginData.username and loginData.password then
-            login(loginData.username, loginData.password)
+            LoginWith(loginData.username, loginData.password)
             print("Attempting to login with last login data:", loginData.username)
         else
             GUIState.loginPageOpen = true
@@ -123,11 +127,11 @@ local function drawApp()
         )
 
         if Imgui.Begin("Profile & Settings") then
-            Imgui.Text("Username: " .. user.name)
-            Imgui.SetItemTooltip("ID: " .. user.id)
+            Imgui.Text("Username: " .. CurrentUser.name)
+            Imgui.SetItemTooltip("ID: " .. CurrentUser.id)
 
             if Imgui.Button("Logout") then
-                user = nil
+                CurrentUser = nil
 
                 GUIState.currentChatroom = nil
                 GUIState.loginPageOpen = true
@@ -145,398 +149,35 @@ local function drawApp()
             Imgui.End()
         end
 
-        if user == nil then
+        if CurrentUser == nil then
             Imgui.End()
             return
         end
 
-        ---@cast user User
+        DrawChat()
 
-        local room = GUIState.currentChatroom
-        if Imgui.Begin("Chat") and GUIState.currentChatroom and room then
-            Imgui.Text(GUIState.currentChatroom.name)
-            Imgui.Separator()
-
-            ---TODO: dynamically load messages
-
-            table.sort(room.messages, function(a, b)
-                return a.timestamp < b.timestamp
-            end)
-
-            Imgui.GetContentRegionAvail(contentRegionAvailable)
-
-            -- local textLineHeight = Imgui.GetTextLineHeight()
-
-            for i, message in ipairs(room.messages) do
-                -- local messageHeight = textLineHeight * (message.newLineCount + 2) + 8
-                Imgui.BeginGroup()
-                if user.profilePicture then
-                    if not user.profilePictureTexture then
-                        user.profilePictureTexture = love.graphics.newTexture(user.profilePicture)
-                    end
-                end
-
-                if user.profilePictureTexture then
-                    Imgui.Image(user.profilePictureTexture, GUIState.profilePictureSize)
-                else
-                    Imgui.Dummy(GUIState.profilePictureSize)
-                end
-                Imgui.SameLine()
-                Imgui.Text(message.fromName)
-                Imgui.SameLine()
-                Imgui.TextDisabled(os.date("%H:%M:%S", message.timestamp))
-                Imgui.Text(message.text)
-                Imgui.EndGroup()
-            end
-
-            GUIState.hoveredChatWindow = Imgui.IsWindowHovered()
-        end
-        Imgui.End()
-
-        if GUIState.overedChatWindow and not GUIState.hasKeyboardFocus and GUIState.anyKeypressed then
-            print("Setting keyboard focus to message box")
-            Imgui.SetNextWindowFocus()
-        end
-
-        if Imgui.Begin("Message Box") and GUIState.currentChatroom then
-            if GUIState.justSentMessage or (GUIState.hoveredChatWindow and not GUIState.hasKeyboardFocus and GUIState.anyKeypressed) then
-                Imgui.SetKeyboardFocusHere(); GUIState.justSentMessage = false
-            end
-            local textLineHeight = Imgui.GetTextLineHeight()
-
-            local lines = CountNewLines(ffi.string(GUIState.userInput)) + 2
-            local size = ffi.new("ImVec2", -1, textLineHeight * lines + 8)
-
-            if Imgui.InputTextMultiline("##MessageInput", GUIState.userInput, maxUserInputLength, size,
-                    bit.bor(Imgui.ImGuiInputTextFlags_EnterReturnsTrue, Imgui.ImGuiInputTextFlags_CtrlEnterForNewLine, Imgui.ImGuiInputTextFlags_CharsNoBlank)) then
-                local message = ffi.string(GUIState.userInput)
-                ffi.fill(GUIState.userInput, maxUserInputLength)
-
-                GUIState.justSentMessage = true
-
-                Request.request(
-                    "chatroom.addMessage",
-                    {
-                        GUIState.currentChatroom.id,
-                        ChatMessage.newChatMessage(message, user.id, user.name)
-                    },
-                    user.id,
-                    nil,
-                    nil,
-                    "post"
-                )
-            end
-
-            GUIState.hasKeyboardFocus = Imgui.IsItemActive()
-        end
-        Imgui.End()
-
-        if Imgui.Begin("Chat rooms") then
-            for _, chatroom in ipairs(chatrooms) do
-                if Imgui.Selectable_Bool(chatroom.name, false, Imgui.ImGuiSelectableFlags_AllowDoubleClick) then
-                    GUIState.currentChatroom = chatroom
-
-                    Request.request(
-                        "chatroom.getMessages",
-                        {
-                            chatroom.id,
-                            1,
-                            100
-                        },
-                        user.id,
-                        function(success, messages)
-                            if not success then
-                                print("Failed to load messages for chatroom:", chatroom.id)
-                                return
-                            end
-
-                            chatroom.messages = messages or {}
-
-                            table.sort(chatroom.messages, function(a, b)
-                                return a.timestamp < b.timestamp
-                            end)
-
-                            print("Loaded " .. #chatroom.messages .. " messages for chatroom: " .. chatroom.id)
-                        end,
-                        nil,
-                        "get"
-                    )
-                end
-            end
-        end
-        Imgui.End()
+        DrawChatRoom()
     end
 
     Imgui.End()
     GUIState.anyKeypressed = false
 end
 
-local function loginPage()
-    Imgui.SetNextWindowSize(ffi.new("ImVec2", 400, 300))
-    Imgui.SetNextWindowPos(ffi.new("ImVec2", (love.graphics.getWidth() - 400) / 2, (love.graphics.getHeight() - 300) / 2))
+---@param file love.DroppedFile
+function love.filedropped(file)
+    local filename = file:getFilename()
+    local extension = Stringh.extension(filename)
 
-    if Imgui.Begin("Login", nil, bit.bor(Imgui.ImGuiWindowFlags_NoResize, Imgui.ImGuiWindowFlags_NoMove, Imgui.ImGuiWindowFlags_NoCollapse)) then
-        Imgui.Text("Username:")
-        Imgui.InputText("##Username", GUIState.loginUsername, maxUsernameLength, Imgui.ImGuiInputTextFlags_CharsNoBlank)
+    if extension == ".png" or extension == ".jpg" or extension == ".jpeg" or extension == ".bmp" or extension == ".dds" then
+        local attachment = Attachments.newChatMessageAttachment(file:read("data"), "texture")
 
-        Imgui.Text("Password:")
-        Imgui.InputText("##Password", GUIState.loginPassword, maxPasswordLength,
-            bit.bor(Imgui.ImGuiInputTextFlags_Password, Imgui.ImGuiInputTextFlags_CharsNoBlank))
-
-        if Imgui.Button("Login") then
-            local username = ffi.string(GUIState.loginUsername)
-            local password = ffi.string(GUIState.loginPassword)
-
-            if username == "" or password == "" then
-                print("Username and password cannot be empty")
-                Imgui.End()
-                return
-            end
-
-            -- username must be at least 3 characters and at most 80 characters
-            if #username < 3 or #username > maxUsernameLength then
-                print("Username must be between 3 and " .. maxUsernameLength .. " characters")
-                Imgui.End()
-                return
-            end
-
-            -- password must be at least 6 characters and at most 128 characters
-            if #password < 6 or #password > maxPasswordLength then
-                print("Password must be between 6 and " .. maxPasswordLength .. " characters")
-                Imgui.End()
-                return
-            end
-
-            password = love.data.hash("string", "sha256", password)
-
-            love.filesystem.write("lastLogin.txt", Buffer.encode({
-                username = username,
-                password = password
-            }))
-
-            login(username, password)
-
-            GUIState.currentChatroom = nil -- Reset to global chat after login
-        end
-
-        Imgui.Separator()
-        Imgui.Text("Don't have an account?");
-
-        if Imgui.Button("Register") then
-            -- Switch to register page
-            GUIState.loginUsername = ffi.new("char[?]", maxUsernameLength)
-            GUIState.loginPassword = ffi.new("char[?]", maxPasswordLength)
-
-            GUIState.loginPageOpen = false
-            GUIState.registerPageOpen = true
-        end
-    end
-    Imgui.End()
-end
-
-local function registerPage()
-    Imgui.SetNextWindowSize(ffi.new("ImVec2", 400, 300))
-    Imgui.SetNextWindowPos(ffi.new("ImVec2", (love.graphics.getWidth() - 400) / 2, (love.graphics.getHeight() - 300) / 2))
-
-    if Imgui.Begin("Register", nil, bit.bor(Imgui.ImGuiWindowFlags_NoResize, Imgui.ImGuiWindowFlags_NoMove, Imgui.ImGuiWindowFlags_NoCollapse)) then
-        Imgui.Text("Username:")
-        Imgui.InputText("##Username", GUIState.loginUsername, maxUsernameLength, Imgui.ImGuiInputTextFlags_CharsNoBlank)
-
-        Imgui.Text("Password:")
-        Imgui.InputText("##Password", GUIState.loginPassword, maxPasswordLength,
-            bit.bor(Imgui.ImGuiInputTextFlags_Password, Imgui.ImGuiInputTextFlags_CharsNoBlank))
-
-        if Imgui.Button("Register") then
-            local username = ffi.string(GUIState.loginUsername)
-            local password = ffi.string(GUIState.loginPassword)
-
-            if username == "" or password == "" then
-                print("Username and password cannot be empty")
-                Imgui.End()
-                return
-            end
-
-            -- username must be at least 3 characters and at most 80 characters
-            if #username < 3 or #username > maxUsernameLength then
-                print("Username must be between 3 and " .. maxUsernameLength .. " characters")
-                Imgui.End()
-                return
-            end
-
-            -- password must be at least 6 characters and at most 128 characters
-            if #password < 6 or #password > maxPasswordLength then
-                print("Password must be between 6 and " .. maxPasswordLength .. " characters")
-                Imgui.End()
-                return
-            end
-
-            password = love.data.hash("string", "sha256", password)
-
-            local success, errmsg = Request.request(
-                "user.create",
-                {
-                    username,
-                    password
-                },
-                nil,
-                function(...)
-                    local success, userOrError = ...
-                    if not success then
-                        print("Registration failed:", userOrError)
-                        return
-                    end
-
-                    success, user = User.loadUser(userOrError)
-                    print("User loaded:", user.id)
-
-                    if not success or type(user) ~= "table" then
-                        print("Failed to load user:", user)
-                        return
-                    end
-
-                    ---@cast user User
-
-                    GUIState.currentChatroom = nil -- Reset to global chat after registration
-                    GUIState.loginPageOpen = false
-                    GUIState.registerPageOpen = false
-
-                    Request.request(
-                        "chatroom.join",
-                        {
-                            user.id,
-                            "GLOBAL_CHAT_ID__" -- Join the global chatroom after registration
-                        },
-                        user.id,
-                        function(success, errmsg)
-                            if not success then
-                                print("Failed to join global chatroom:", errmsg)
-                                return
-                            end
-
-                            user:refresh()
-                        end
-                    )
-                end,
-                nil,
-                "post"
-            )
-
-            if not success then
-                print("Registration failed:", errmsg)
-                Imgui.End()
-                return
-            end
-        end
-
-        Imgui.Separator()
-        Imgui.Text("Already have an account?");
-
-        if Imgui.Button("Login") then
-            -- Switch to login page
-            GUIState.loginUsername = ffi.new("char[?]", maxUsernameLength)
-            GUIState.loginPassword = ffi.new("char[?]", maxPasswordLength)
-
-            GUIState.loginPageOpen = true
-            GUIState.registerPageOpen = false
-        end
-    end
-    Imgui.End()
-end
-
---- Loads image data from a file and returns it.
----@param files string[]
----@param filtername string
----@param errorstring string|nil
----@return boolean
----@return love.ImageData|love.CompressedImageData|string
-local function loadImagedata(files, filtername, errorstring)
-    if errorstring then
-        return false, "Error: " .. errorstring
-    end
-
-    if #files == 0 then
-        return false, "No files selected"
-    end
-
-    local file = files[1]:gsub("\\", "/") ---@type string
-
-    local directory = file:match("^(.+)/[^/]+$")    -- "C:/path/to/file.png" -> "C:/path/to/"
-    local filename = file:match("^.+[\\/]([^/]+)$") -- "C:/path/to/file.png" -> "file.png"
-    local extension = file:match("^.+(%..+)$")      -- "file.png" -> ".png"
-
-    love.filesystem.mountFullPath(directory, "profile_pictures", "read")
-    local imageData
-
-    if extension == ".DDS" or extension == ".dds" then
-        imageData = love.image.newCompressedData("profile_pictures/" .. filename)
-    else
-        imageData = love.image.newImageData("profile_pictures/" .. filename)
-    end
-    love.filesystem.unmountFullPath("profile_pictures")
-
-    if not imageData then
-        return false, "Failed to load image data from file: " .. file
-    end
-
-    if imageData:getWidth() > 512 or imageData:getHeight() > 512 then
-        return false, "Profile picture must be at most 512x512 pixels"
-    end
-
-    return true, imageData
-end
-
-local function drawProfileSettings()
-    Imgui.Text("Profile Settings")
-    Imgui.Separator()
-
-    if Imgui.Button("Change Profile Picture") then
-        -- Open file dialog to select a new profile picture
-        love.window.showFileDialog("openfile", function(files, filtername, errorstring)
-            local success, loaded, imagedata = pcall(loadImagedata, files, filtername, errorstring)
-            if not success or not imagedata then
-                print("Failed to load image data:", loaded)
-                return
-            end
-            if not loaded then
-                print("Error loading image data:", imagedata)
-                return
-            end
-
-            user:setProfilePicture(imagedata)
-            user:updateServerData()
-        end, { title = "Select Profile Picture", filter = { "png", "jpg", "jpeg", "DDS", "dds", "bmp" } })
-    end
-    Imgui.Text("Max profile picture size: 512x512 pixels")
-
-    if user.profilePicture then
-        if not user.profilePictureTexture then
-            user.profilePictureTexture = love.graphics.newTexture(user.profilePicture)
-        end
-        Imgui.Image(user.profilePictureTexture, ffi.new("ImVec2", 100, 100))
-    else
-        Imgui.Text("No profile picture set")
-    end
-
-    if Imgui.Button("Set Custom Status") then
-        -- Open a dialog to set custom status
-        local status = Imgui.InputText("Custom Status", user.customStatus or "", 256)
-        user:setCustomStatus(status)
-    end
-
-    local status, expires = user:getCustomStatus()
-    if status then
-        Imgui.Text("Custom Status: " .. status)
-        if expires then
-            Imgui.Text("Expires at: " .. os.date("%Y-%m-%d %H:%M:%S", expires))
-        end
-    else
-        Imgui.Text("No custom status set")
+        table.insert(GUIState.attachments, attachment)
     end
 end
 
 local settingsPages = {
     { name = "Theme",         draw = Imgui.ShowStyleEditor },
-    { name = "Profile",       draw = drawProfileSettings },
+    { name = "Profile",       draw = DrawProfileSettings },
     { name = "Privacy",       draw = function() Imgui.Text("Privacy settings go here") end },
     { name = "Notifications", draw = function() Imgui.Text("Notification settings go here") end },
 }
@@ -578,41 +219,36 @@ local function settingsPage()
 end
 
 local function fetchChatrooms()
-    for i, chatroom in ipairs(user.chatrooms) do
+    for i, chatroom in ipairs(CurrentUser.chatrooms) do
         local roomLoaded = false
-        for j, room in ipairs(chatrooms) do
+        for j, room in ipairs(Cache.chatrooms) do
             if room.id == chatroom then
                 roomLoaded = true
                 break
             end
         end
 
-        if pendingChatroomRequests[chatroom] then
-            -- If a request is already pending, skip loading this chatroom
-            roomLoaded = true
-        end
-
         if not roomLoaded then
-            pendingChatroomRequests[chatroom] = true
             print("Requesting chatroom:", chatroom)
 
             local success, errmsg = Request.request(
                 "chatroom.get",
                 { chatroom },
-                user.id,
+                CurrentUser.id,
                 function(success, chatroomData)
                     print("Received chatroom data:", chatroomData)
-                    pendingChatroomRequests[chatroomData.id] = nil
                     if not success then
                         print("Failed to get chatroom:", chatroomData)
                         return
                     end
 
-                    table.insert(chatrooms,
+                    table.insert(Cache.chatrooms,
                         Chatroom.newChatroom(chatroomData.name, chatroomData.id, chatroomData.ownerID))
                 end,
                 nil,
-                "get"
+                "get",
+                "once",
+                chatroom
             )
 
             if not success then
@@ -640,17 +276,25 @@ local onReceive = {
 }
 
 function love.update(dt)
+    if Shutdown then return end
     if not Connection.host then return end
     if not Connection.server then return end
+    if not Connection.connected then return end
 
     local event = Connection.host:service()
 
     while event do
         if event.type == "connect" then
-            print("Connected to server")
-            loginFromLastLogin()
+            print("Invalid connection event received")
         elseif event.type == "disconnect" then
             print("Disconnected from server")
+
+            CurrentUser = nil
+            GUIState.currentChatroom = nil
+
+            Connection.server = nil
+            Connection.connected = false
+            Connection.host:destroy()
         elseif event.type == "receive" then
             local message = event.data
             print("Received message from server")
@@ -674,12 +318,13 @@ function love.update(dt)
         event = Connection.host:service()
     end
 
-    if user then
+    if CurrentUser then
         fetchChatrooms()
     end
 end
 
 function love.draw()
+    if Shutdown then return end
     Imgui.love.Update(love.timer.getDelta())
     Imgui.NewFrame()
 
@@ -687,16 +332,20 @@ function love.draw()
         GUIState.registerPageOpen = false
     end
 
-    if GUIState.loginPageOpen then
-        loginPage()
-    elseif GUIState.registerPageOpen then
-        registerPage()
-    elseif user then
-        if GUIState.settingsPageOpen then
-            settingsPage()
-        else
-            drawApp()
+    if Connection.connected then
+        if GUIState.loginPageOpen then
+            DrawLoginPage()
+        elseif GUIState.registerPageOpen then
+            DrawRegisterPage()
+        elseif CurrentUser then
+            if GUIState.settingsPageOpen then
+                settingsPage()
+            else
+                drawApp()
+            end
         end
+    else
+        DrawConnectPage(loginFromLastLogin)
     end
 
     Request.updateRequests()
@@ -740,10 +389,11 @@ function love.wheelmoved(x, y)
 end
 
 function love.quit()
+    Connection.connected = false
+    Shutdown = true
     if Connection.server then
         Connection.server:disconnect_now()
     end
     Connection.host:destroy()
     Imgui.love.Shutdown()
-    print("Application closed")
 end

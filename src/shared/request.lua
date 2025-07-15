@@ -8,9 +8,25 @@ local replies = {}
 ---@param callback function|nil
 ---@param timeout number|nil
 ---@param type "post" | "get" | "put" | "delete" | nil
+---@param amount "once" | "many" | nil
+---@param id string|nil
 ---@return boolean
 ---@return string
-local function Request(path, args, userID, callback, timeout, type)
+local function Request(path, args, userID, callback, timeout, type, amount, id)
+    amount = amount or "many"
+
+    if amount == "once" then
+        if id == nil then
+            return false, "ID must be provided for 'once' requests"
+        end
+        -- If we've already sent a request with this path and id, we should not send it again until we get a reply
+        for _, request in ipairs(requests) do
+            if request.path == path and request.id == id then
+                return false, "Request with this path and ID already exists"
+            end
+        end
+    end
+
     local data = {
         type = type,
         path = path,
@@ -29,6 +45,8 @@ local function Request(path, args, userID, callback, timeout, type)
         callback = callback,
         timeout = timeout or 10,
         startTime = love.timer.getTime(),
+        path = path,
+        id = id,
     })
 
     return message:send(Connection.server)

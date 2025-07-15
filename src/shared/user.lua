@@ -9,7 +9,7 @@ local userMetatable = {}
 ---@field friends ID[]
 ---@field blockedUsers ID[]
 ---@field privileges number -- Server side only
----@field profilePicture love.ImageData | nil
+---@field profilePicture love.ImageData | love.CompressedImageData | nil
 ---@field profilePictureTexture love.Texture | nil -- Client side only
 ---@field customStatus string | nil
 ---@field customStatusExpires number | nil -- Timestamp when the custom status expires
@@ -58,7 +58,7 @@ local function circularizeProfilePicture(imagedata)
             return r, g, b, math.min(1 - math.max(math.min((distance - center) * 0.2, 1), 0), a) -- bit of antialiasing
         end
         return r, g, b,
-            a                                                                                    -- Keep the original pixel color
+            a -- Keep the original pixel color
     end)
 end
 
@@ -78,9 +78,11 @@ local function loadUser(user)
 
     print("Loading user:", user.id, user.name, type(user.profilePicture))
     if user.profilePicture and type(user.profilePicture) == "string" then
-        user.profilePicture = love.image.newImageData(love.data.newByteData(user.profilePicture))
+        if not SERVER then
+            user.profilePicture = love.image.newImageData(love.data.newByteData(user.profilePicture))
 
-        circularizeProfilePicture(user.profilePicture)
+            circularizeProfilePicture(user.profilePicture)
+        end
     end
 
     setmetatable(user, userMetatable)
@@ -280,6 +282,18 @@ end
 function userFunctions:updateServerData()
     if SERVER then return false, "This function can only be called on the client" end
 
+    local imageStr
+
+    if self.profilePicture then
+        if self.profilePicture:type() == "ImageData" then
+            imageStr = self.profilePicture:encode("png"):getString()
+        elseif self.profilePicture:type() == "CompressedImageData" then
+            imageStr = self.profilePicture:getString()
+        else
+            print("Warning: Unsupported profile picture type:", self.profilePicture:type())
+        end
+    end
+
     local success, err = Request.request(
         "user.update",
         { self.id, {
@@ -290,7 +304,7 @@ function userFunctions:updateServerData()
             friends = self.friends,
             blockedUsers = self.blockedUsers,
             privileges = self.privileges,
-            profilePicture = self.profilePicture and self.profilePicture:encode("png"):getString() or nil,
+            profilePicture = imageStr,
             customStatus = self.customStatus,
             customStatusExpires = self.customStatusExpires
         } },

@@ -43,6 +43,11 @@ return
             return user ~= nil, user or "User not found"
         end,
 
+        getByUsername = function(username)
+            local user = UserService.getByName(username)
+            return user ~= nil, user or "User not found"
+        end,
+
         getAll = function()
             return true, UserService.getAll()
         end,
@@ -79,6 +84,77 @@ return
             end
 
             return true, user.chatrooms
+        end,
+
+        requestFriend = function(userID, friendUsername)
+            local user = UserService.get(userID)
+            if not user then
+                return false, "User not found"
+            end
+
+            local friend = UserService.getByName(friendUsername)
+            if not friend then
+                return false, "Friend not found"
+            end
+
+            if user.id == friend.id then
+                return false, "Cannot add yourself as a friend"
+            end
+
+            for _, f in ipairs(user.friends) do
+                if f == friend.id then
+                    return false, "Already friends"
+                end
+            end
+
+            table.insert(user.friends, friend.id)
+            table.insert(friend.friends, user.id)
+
+            return true
+        end,
+
+        getFriends = function(id)
+            local user = UserService.get(id)
+            if not user then
+                return false, "User not found"
+            end
+
+            return true, user.friends
+        end,
+
+        removeFriend = function(userID, friendID)
+            local user = UserService.get(userID)
+            if not user then
+                return false, "User not found"
+            end
+
+            local friend = UserService.get(friendID)
+            if not friend then
+                return false, "Friend not found"
+            end
+
+            local removed = false
+
+            for i, f in ipairs(user.friends) do
+                if f == friend.id then
+                    table.remove(user.friends, i)
+                    removed = true
+                    break
+                end
+            end
+
+            for i, f in ipairs(friend.friends) do
+                if f == user.id then
+                    table.remove(friend.friends, i)
+                    break
+                end
+            end
+
+            if not removed then
+                return false, "Not friends"
+            end
+
+            return true
         end,
     },
     { -- autorization

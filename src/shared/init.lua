@@ -37,6 +37,7 @@ if not SERVER then
     Imgui.StyleColorsLight();
 end
 
+require("utils")
 Tables = require("tables")
 ID = require("id")
 Message = require("message")

@@ -7,6 +7,8 @@ require("Windows.connect")
 require("Windows.chatrooms")
 require("Windows.register")
 require("Windows.channels")
+require("Windows.friends")
+require("Helpers.user")
 
 require("Windows.Settings.profile")
 
@@ -49,7 +51,6 @@ GUIState = {
 
     loginPageOpen = false,
     registerPageOpen = false,
-    settingsPageOpen = false,
 
     currentChatroom = nil, ---@type Chatroom|nil
     currentChannel = nil, ---@type Channel|nil
@@ -71,7 +72,12 @@ GUIState = {
 
     maxUserInputLength = maxUserInputLength,
     maxUsernameLength = maxUsernameLength,
-    maxPasswordLength = maxPasswordLength
+    maxPasswordLength = maxPasswordLength,
+
+    currentWindow = "servers",  -- Current active window
+    currentDirectMessage = nil, --@type User | nil
+
+    friends = {},               --@type User[]
 }
 
 Cache = {
@@ -119,69 +125,6 @@ local function loginFromLastLogin()
     end
 end
 
-local function drawApp()
-    Imgui.SetNextWindowSize(ffi.new("ImVec2", love.graphics.getDimensions()))
-    Imgui.SetNextWindowPos(ffi.new("ImVec2", 0, 0))
-
-    if Imgui.Begin("App", nil, flags) then
-        Imgui.SetCursorScreenPos(ffi.new("ImVec2", 0, 0))
-        Imgui.DockSpace(1, ffi.new("ImVec2", love.graphics.getDimensions()),
-            bit.bor(
-                Imgui.ImGuiDockNodeFlags_AutoHideTabBar
-            )
-        )
-
-        if Imgui.Begin("Profile & Settings") then
-            Imgui.Text("Username: " .. CurrentUser.name)
-            Imgui.SetItemTooltip("ID: " .. CurrentUser.id)
-
-            if Imgui.Button("Logout") then
-                CurrentUser = nil
-
-                GUIState.currentChatroom = nil
-                GUIState.loginPageOpen = true
-                GUIState.registerPageOpen = false
-
-                love.filesystem.remove("lastLogin.txt")
-            end
-
-            Imgui.SameLine()
-
-            if Imgui.Button("Settings") then
-                GUIState.settingsPageOpen = true
-            end
-
-            Imgui.End()
-        end
-
-        if CurrentUser == nil then
-            Imgui.End()
-            return
-        end
-
-        DrawChannels()
-
-        DrawChat()
-
-        DrawChatRoom()
-    end
-
-    Imgui.End()
-    GUIState.anyKeypressed = false
-end
-
----@param file love.DroppedFile
-function love.filedropped(file)
-    local filename = file:getFilename()
-    local extension = Stringh.extension(filename)
-
-    if extension == ".png" or extension == ".jpg" or extension == ".jpeg" or extension == ".bmp" or extension == ".dds" then
-        local attachment = Attachments.newChatMessageAttachment(file:read("data"), "texture")
-
-        table.insert(GUIState.attachments, attachment)
-    end
-end
-
 local settingsPages = {
     { name = "Theme",         draw = Imgui.ShowStyleEditor },
     { name = "Profile",       draw = DrawProfileSettings },
@@ -189,21 +132,55 @@ local settingsPages = {
     { name = "Notifications", draw = function() Imgui.Text("Notification settings go here") end },
 }
 
-local function settingsPage()
-    Imgui.SetNextWindowSize(ffi.new("ImVec2", love.graphics.getDimensions()))
-    Imgui.SetNextWindowPos(ffi.new("ImVec2", 0, 0))
+---@param window "servers" | "settings" | "direct messages" | "add friend" | "friends list"
+function SetCurrentWindow(window)
+    assert(Windows[window], "Invalid window: " .. tostring(window))
 
-    if Imgui.Begin("App", nil, flags) then
-        Imgui.SetCursorScreenPos(ffi.new("ImVec2", 0, 0))
-        Imgui.DockSpace(1, ffi.new("ImVec2", love.graphics.getDimensions()),
-            bit.bor(
-                Imgui.ImGuiDockNodeFlags_AutoHideTabBar
-            )
-        )
+    GUIState.currentWindow = window
+end
 
+function GetCurrentWindow()
+    return GUIState.currentWindow
+end
+
+function DrawProfileAndSettings()
+    if Imgui.Begin("Profile & Settings") then
+        Imgui.Text("Username: " .. CurrentUser.name)
+        Imgui.SetItemTooltip("ID: " .. CurrentUser.id)
+
+        if Imgui.Button("Logout") then
+            CurrentUser = nil
+
+            GUIState.currentChatroom = nil
+            GUIState.loginPageOpen = true
+            GUIState.registerPageOpen = false
+
+            love.filesystem.remove("lastLogin.txt")
+        end
+
+        Imgui.SameLine()
+
+        if Imgui.Button("Settings") then
+            SetCurrentWindow("settings")
+        end
+    end
+    Imgui.End()
+end
+
+Windows = {
+    servers = function()
+        DrawProfileAndSettings()
+
+        assert(CurrentUser, "No current user")
+
+        DrawChannels()
+        DrawChat()
+        DrawLeftBar()
+    end,
+    settings = function()
         if Imgui.Begin("Settings") then
             if Imgui.Button("Close") then
-                GUIState.settingsPageOpen = false
+                SetCurrentWindow("servers")
             end
 
             Imgui.Separator()
@@ -221,24 +198,77 @@ local function settingsPage()
 
             Imgui.End()
         end
+    end,
+
+    ["direct messages"] = function()
+        if Imgui.Begin("Profile & Settings") then
+            Imgui.Text("Username: " .. CurrentUser.name)
+            Imgui.SetItemTooltip("ID: " .. CurrentUser.id)
+
+            if Imgui.Button("Logout") then
+                CurrentUser = nil
+
+                GUIState.currentChatroom = nil
+                GUIState.loginPageOpen = true
+                GUIState.registerPageOpen = false
+
+                love.filesystem.remove("lastLogin.txt")
+            end
+
+            Imgui.SameLine()
+
+            if Imgui.Button("Settings") then
+                SetCurrentWindow("settings")
+            end
+
+            Imgui.End()
+        end
+
+        DrawFriends()
+        DrawChat()
+        DrawLeftBar()
+    end,
+
+    ["add friend"] = function()
+        DrawFriends()
+        DrawAddFriend()
+        DrawLeftBar()
+    end,
+    ["friends list"] = function()
+        DrawFriends()
+        DrawAllFriends()
+        DrawLeftBar()
+    end,
+}
+
+function DrawApp()
+    Imgui.SetNextWindowSize(ffi.new("ImVec2", love.graphics.getDimensions()))
+    Imgui.SetNextWindowPos(ffi.new("ImVec2", 0, 0))
+
+    if Imgui.Begin("App", nil, flags) then
+        Imgui.SetCursorScreenPos(ffi.new("ImVec2", 0, 0))
+        Imgui.DockSpace(1, ffi.new("ImVec2", love.graphics.getDimensions()),
+            bit.bor(
+                Imgui.ImGuiDockNodeFlags_AutoHideTabBar
+            )
+        )
+
+        Windows[GetCurrentWindow()]()
     end
     Imgui.End()
+
+    GUIState.anyKeypressed = false
 end
 
-local function printTable(data, depth)
-    if type(data) == "table" then
-        depth = depth or 0
-        local indent = string.rep("  ", depth)
-        for k, v in pairs(data) do
-            if type(v) == "table" then
-                print(indent .. tostring(k) .. ":")
-                printTable(v, depth + 1)
-            else
-                print(indent .. tostring(k) .. ": " .. tostring(v))
-            end
-        end
-    else
-        print(tostring(data))
+---@param file love.DroppedFile
+function love.filedropped(file)
+    local filename = file:getFilename()
+    local extension = Stringh.extension(filename)
+
+    if extension == ".png" or extension == ".jpg" or extension == ".jpeg" or extension == ".bmp" or extension == ".dds" then
+        local attachment = Attachments.newChatMessageAttachment(file:read("data"), "texture")
+
+        table.insert(GUIState.attachments, attachment)
     end
 end
 
@@ -373,11 +403,7 @@ function love.draw()
         elseif GUIState.registerPageOpen then
             DrawRegisterPage()
         elseif CurrentUser then
-            if GUIState.settingsPageOpen then
-                settingsPage()
-            else
-                drawApp()
-            end
+            DrawApp()
         end
     else
         DrawConnectPage(loginFromLastLogin)

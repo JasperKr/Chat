@@ -86,7 +86,7 @@ function DrawLoginPage()
 
             LoginWith(username, password)
 
-            GUIState.currentChatroom = nil -- Reset to global chat after login
+            SetCurrentWindow("direct messages")
         end
 
         Imgui.Separator()

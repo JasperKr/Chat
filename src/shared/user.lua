@@ -85,6 +85,25 @@ local function loadUser(user)
         end
     end
 
+    if user.friends then
+        local friendsAdded = {}
+        local newFriends = {}
+
+        for i, friendID in ipairs(user.friends) do
+            if friendsAdded[friendID] then
+                goto continue
+            end
+            if type(friendID) == "table" and friendID.id then
+                user.friends[i] = friendID.id
+            end
+            table.insert(newFriends, user.friends[i])
+            friendsAdded[user.friends[i]] = true
+            ::continue::
+        end
+
+        user.friends = newFriends
+    end
+
     setmetatable(user, userMetatable)
 
     return true, user

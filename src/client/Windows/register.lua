@@ -61,26 +61,9 @@ function DrawRegisterPage()
 
                     CurrentUser = u
 
-                    GUIState.currentChatroom = nil -- Reset to global chat after registration
+                    GUIState.currentChatroom = nil
                     GUIState.loginPageOpen = false
                     GUIState.registerPageOpen = false
-
-                    Request.request(
-                        "chatroom.join",
-                        {
-                            CurrentUser.id,
-                            "GLOBAL_CHAT_ID__" -- Join the global chatroom after registration
-                        },
-                        CurrentUser.id,
-                        function(success, errmsg)
-                            if not success then
-                                print("Failed to join global chatroom:", errmsg)
-                                return
-                            end
-
-                            CurrentUser:refresh()
-                        end
-                    )
                 end,
                 nil,
                 "post"

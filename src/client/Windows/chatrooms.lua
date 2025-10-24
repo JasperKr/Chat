@@ -15,10 +15,14 @@ local function validateChatroomName(name)
     return true
 end
 
-function DrawChatRoom()
+function DrawLeftBar()
     if Imgui.Begin("Chat rooms") then
         if Imgui.Button("Create Chat Room") then
             GUIState.createChatRoomWindowOpen = true
+        end
+
+        if Imgui.Button("Direct Messages") then
+            SetCurrentWindow("direct messages")
         end
 
         Imgui.Separator()
@@ -52,6 +56,8 @@ function DrawChatRoom()
 
                 GUIState.selectedChannelPerChatroom[chatroom.id] = channelID
                 GUIState.currentChannel = chatroom.channels:get(channelID)
+
+                SetCurrentWindow("servers")
             end
         end
     end
